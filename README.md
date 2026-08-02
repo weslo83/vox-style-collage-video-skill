@@ -3,6 +3,10 @@
 Agent skill for turning scripts, beat lists, or fact lists into Vox-style
 paper-collage explainer videos.
 
+## Demo
+
+![Vox-style collage video demo](assets/demo.gif)
+
 This skill is intended for **Claude**, **OpenClaw**, and **Hermes Agent** style
 skill runtimes. It is built around the **Unsora MCP** toolset from
 [Unsora](https://tryunsora.com/), which is required for image, video, music
