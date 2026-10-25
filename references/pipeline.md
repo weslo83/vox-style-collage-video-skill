@@ -8,7 +8,7 @@ VO source at the front door, so act on that choice directly; if a call returns a
 auth error, surface it and the user re-authenticates.
 
 This skill assumes it is running in Claude, OpenClaw, or Hermes Agent with Unsora
-MCP connected. If Unsora MCP is unavailable, do not start generation planning.
+MCP connected for generation. Prompt-only planning and local assembly do not require Unsora. Check live schemas before paid calls: model names, parameter limits, slot ordering and wait arguments below are examples, not a current API guarantee.
 
 Contents:
 1. Workspace layout
@@ -44,7 +44,7 @@ Contents:
 └── final.mp4            # VO + music mixed  (the deliverable)
 ```
 
-Copy only `final.mp4` to the outputs directory.
+Deliver `final.mp4` and retain the workspace and manifest for revisions. Never overwrite originals when downloading, splitting or mixing; use distinct output names and promote a verified candidate to the deliverable.
 
 ---
 
@@ -59,7 +59,7 @@ Copy only `final.mp4` to the outputs directory.
 
 Then `Unsora AI:wait_for_image` (`generationId`, `intervalSeconds: 5`,
 `maxAttempts: 60`). Record the URL in the manifest `assets` block and
-`curl -L -o sheets/<name>.png "<URL>"`. Show each sheet to the user before shots.
+`curl --fail --location --retry 2 -o sheets/<name>.png "<URL>"`. Show each sheet to the user before shots.
 
 ---
 
@@ -74,7 +74,7 @@ Then `Unsora AI:wait_for_image` (`generationId`, `intervalSeconds: 5`,
 
 Then `Unsora AI:wait_for_image` (`intervalSeconds: 5`, `maxAttempts: 60`). Keep
 the returned image URL — pass it straight to `create_video` as `image`. Pull a
-local copy: `curl -L -o frames/shot_01.png "<IMAGE_URL>"`.
+local copy: `curl --fail --location --retry 2 -o frames/shot_01.png "<IMAGE_URL>"`.
 
 ---
 
@@ -86,23 +86,23 @@ local copy: `curl -L -o frames/shot_01.png "<IMAGE_URL>"`.
 | `model` | `seedance-2.0` (not `-fast`; the prompts are written for full) |
 | `image` | The hero-frame URL from `wait_for_image` (the start frame) |
 | `aspectRatio` | **Identical** to the image call |
-| `duration` | Integer seconds. Set to the shot's VO-line length (Phase 4). Seedance floor is 4s — a planned 3s beat generates at 4 and is trimmed in post |
+| `duration` | Integer seconds, rounded up to fit measured narration plus lead/tail. Inspect live minimum and maximum; if the current minimum is 4s, a 3s edit generates at 4s and is trimmed in post |
 | `generateAudio` | `true` — the paper-foley bed is the clip's whole audio design |
 | `referenceImages` | The SAME sheet URLs as this shot's hero frame, same order. Slot math: `image` = @Image1, so the first entry here = @Image2. Omit when no assets |
 | `lastImage` | Omit (no cross-shot chaining) |
 
 Then `Unsora AI:wait_for_video` (`generationId`, `intervalSeconds: 10`,
-`maxAttempts: 90`). Seedance 2.0 runs ~7 min/clip. `curl -L -o clips/shot_01.mp4
+`maxAttempts: 90`). Generation latency varies; a wait timeout does not mean the remote job failed. `curl --fail --location --retry 2 -o clips/shot_01.mp4
 "<VIDEO_URL>"`.
 
 **Trim a 3s beat generated at 4s** (re-encode so the cut is exact):
 
 ```bash
-ffmpeg -y -i clips/shot_03_raw.mp4 -t 3 -c:v libx264 -pix_fmt yuv420p -crf 18 \
+ffmpeg -n -i clips/shot_03_raw.mp4 -t 3 -c:v libx264 -pix_fmt yuv420p -crf 18 \
   -c:a aac -b:a 192k clips/shot_03.mp4
 ```
 
-Pre-flight only when diagnosing a rejection: `Unsora AI:get_subscription`
+When generation is requested and account limits are relevant, check available account tools without changing authorization: `Unsora AI:get_subscription`
 (`isActive`), `Unsora AI:get_credits` (balance).
 
 ---
@@ -135,9 +135,11 @@ it; otherwise take one continuous read and cut it against the beats:
 ```bash
 # whole-file duration, then per-beat splits at the timestamps you mark up
 ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 vo/full.mp3
-ffmpeg -y -i vo/full.mp3 -ss 0     -to 4.6  -c copy vo/vo_01.mp3
-ffmpeg -y -i vo/full.mp3 -ss 4.6   -to 9.2  -c copy vo/vo_02.mp3
+ffmpeg -n -i vo/full.mp3 -af "atrim=start=0:end=4.6,asetpts=PTS-STARTPTS" -ar 48000 -c:a pcm_s16le vo/vo_01.wav
+ffmpeg -n -i vo/full.mp3 -af "atrim=start=4.6:end=9.2,asetpts=PTS-STARTPTS" -ar 48000 -c:a pcm_s16le vo/vo_02.wav
 ```
+
+Listen at split boundaries and measure the decoded outputs; MP3 stream-copy cuts are packet-aligned and are unsuitable for exact narration boundaries.
 
 Record `vo.mode: "supplied"` and the source path in the manifest.
 
@@ -164,7 +166,7 @@ a voice you can't produce.
    mid-film.
 3. **Retrieve the audio.** Some tools return a URL directly, some return a job or
    asset id you poll, some render into a widget with a download link. Get to a real
-   URL, then pull it local: `curl -L -o vo/vo_01.mp3 "<AUDIO_URL>"`.
+   URL, then pull it local: `curl --fail --location --retry 2 -o vo/vo_01.mp3 "<AUDIO_URL>"`.
 4. **Sanity-check the first line** before synthesizing the rest — wrong voice
    across 20 lines is 20 wasted calls.
 
@@ -177,8 +179,7 @@ source + voice in the manifest `vo` block; never say Unsora made the voice.
 
 ## 8. Manifest schema
 
-Write `shots.json` at the end of Phase 3, before any generation; update after
-every step. This is what makes a long run resumable.
+Write `shots.json` at the end of planning, before any generation; update after every accepted job and verified result. Write a sibling temporary file and atomically replace the manifest, retaining the previous valid copy. Record each generation ID before polling. The following example is a single pending shot; it is not ready for assembly.
 
 ```json
 {
@@ -186,10 +187,10 @@ every step. This is what makes a long run resumable.
   "aspect_ratio": "16:9",
   "accent": "vox yellow",
   "palette": { "ground": "off-white newsprint", "subjects": "muted near-B&W cut-outs", "accent": "yellow" },
-  "vo": { "mode": "generated | supplied | none", "tool": "<the TTS tool actually used, or null>", "voice_id": "…", "supplied_file": null },
-  "music": { "source": "unsora_create_music | supplied | none", "file": "music.mp3", "id": null },
+  "vo": { "mode": "supplied", "tool": "<the TTS tool actually used, or null>", "voice_id": "…", "supplied_file": null },
+  "music": { "source": "none", "file": null, "id": null },
   "brand_bug": null,
-  "total_seconds": 62,
+  "total_seconds": 6,
   "assets": [
     { "name": "founder", "kind": "character", "used_in_shots": [2,5,7],
       "sheet_prompt": "…", "generation_id": null, "sheet_url": null,
@@ -200,11 +201,11 @@ every step. This is what makes a long run resumable.
       "card": "200 MILES", "subject": "torn map with redline",
       "accent_use": "redline + card", "assets": [],
       "vo_line": "In 1848 the line jumped two hundred miles west — overnight.",
-      "vo_file": "vo/vo_01.mp3", "vo_dur": 4.6, "seconds": 5,
+      "vo_file": "vo/vo_01.mp3", "vo_dur": 4.6, "seconds": 6, "generation_seconds": 6, "lead_ms": 300, "tail_ms": 300,
       "nb_prompt": "…", "seedance_prompt": "…",
       "image_generation_id": null, "image_url": null,
       "video_generation_id": null, "video_url": null,
-      "clip_path": null, "offset_ms": 200, "status": "pending" }
+      "clip_path": null, "offset_ms": 300, "status": "pending" }
   ]
 }
 ```
@@ -212,75 +213,65 @@ every step. This is what makes a long run resumable.
 Shot `status`: `pending` → `vo_done` → `image_queued` → `image_done` →
 `video_queued` → `done` (or `failed` + `error`). Asset `status`: `pending` →
 `queued` → `done`/`failed`. No shot listing an asset generates until that asset is
-`done`; on resume, check assets first. `vo_dur`/`seconds`/`offset_ms` are what §10
-fills.
+`done`; on resume, check assets first. `vo_dur` is measured narration duration; `seconds` is the final edit window; `generation_seconds` is the model request duration; `offset_ms` is absolute narration start in the final film. Recompute offsets from the cumulative preceding edit windows plus `lead_ms`. A silent shot can go from pending directly to image_queued. A done asset must still exist and decode.
 
 ---
 
 ## 9. ffmpeg — concat
 
-Clips share codec/resolution/fps (same model + ratio), so stream copy works. Order
-from the manifest, not a directory listing; zero-pad shot numbers so a glob sorts
-right (`shot_01`, not `shot_1`).
+Inspect and normalize every clip to the same codec, dimensions, frame rate, time base, pixel format and audio layout. The same model and aspect ratio do not guarantee matching streams. Trim raw clips to their final edit windows and add silent audio when a clip has no foley, or use a separately planned audio-free pipeline.
+
+Use manifest array order. Never glob `shot_*.mp4`: that can include raw, rejected or duplicate clips. Generate the list only after every listed shot is done and verified:
 
 ```bash
-cd <agent-workspace>/vox-collage
-: > concat_list.txt
-for f in clips/shot_*.mp4; do printf "file '%s'\n" "$f" >> concat_list.txt; done
-ffmpeg -y -f concat -safe 0 -i concat_list.txt -c copy cut.mp4
+python3 /path/to/skill/scripts/prepare_timeline.py shots.json --probe --output-dir assembly-01
+ffmpeg -n -f concat -safe 0 -i assembly-01/concat_list.txt -c copy cut.mp4
 ```
 
-Fallback if `-c copy` errors on a mismatch (e.g. mixed trimmed clips):
+The helper checks unique shot IDs, local nonempty files, narration windows, stale offsets, clip duration and total duration. Without `--probe`, it trusts declared durations and explicitly reports that media was not probed. It does not validate stream compatibility or visual quality. Use a new output directory after repairs; it never replaces earlier output.
 
-```bash
-ffmpeg -y -f concat -safe 0 -i concat_list.txt \
-  -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -b:a 192k -movflags +faststart cut.mp4
-```
+If stream copy fails, normalize each source first. Re-encoding a concat-demuxer input alone does not repair incompatible source dimensions or time bases.
 
 ---
 
 ## 10. ffmpeg — VO timing + duck/mix
 
 Each shot was sized to its VO line in Phase 4, so each `vo_NN` fits its window;
-placement is each shot's cumulative start offset (a small ~0.2s lead). First
-normalise every VO line so the duck is predictable:
+placement is the cumulative preceding edit windows plus that shot's chosen lead. First normalize the explicit voice files listed in the manifest (including WAV, MP3 or MP4 inputs) so ducking is predictable. Use distinct outputs and remeasure them:
 
 ```bash
-for f in vo/vo_*.mp3; do
-  ffmpeg -y -i "$f" -af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 48000 "${f%.mp3}_n.wav"; done
+ffmpeg -n -i vo/vo_01.wav -af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 48000 vo/vo_01_n.wav
 ```
 
 If a line came back slightly longer than its window, speed it pitch-safe (keep
-`atempo` in `[1.0, 1.15]`) before placing — don't stretch video:
+`atempo` in `[1.0, 1.15]`) before placing only if the user accepts the pacing change. Otherwise resize/split the edit without truncating speech; prefer local holds or trims within approved scope before paid regeneration:
 
 ```bash
-ffmpeg -y -i vo/vo_03_n.wav -filter:a "atempo=1.10" vo/vo_03_fit.wav
+ffmpeg -n -i vo/vo_03_n.wav -filter:a "atempo=1.10" vo/vo_03_fit.wav
 ```
 
 **Mix** — VO on top, music bed ducked under the VO (sidechain), clip foley low.
 Offsets in ms are each shot's start (`offset_ms` in the manifest):
 
 ```bash
-# example: 4 shots, VO at 0.2 / 5.4 / 10.1 / 15.0 s; music looped; -shortest to picture
-ffmpeg -y -i cut.mp4 -stream_loop -1 -i music.mp3 \
+# example only: 20-second picture, VO starts at 0.2 / 5.4 / 10.1 / 15.0 s
+# Replace offsets and 20 with the validated timeline; no input may overrun its window.
+ffmpeg -n -i cut.mp4 -stream_loop -1 -i music.mp3 \
   -i vo/vo_01_n.wav -i vo/vo_02_n.wav -i vo/vo_03_fit.wav -i vo/vo_04_n.wav \
   -filter_complex "\
     [2:a]adelay=200|200[a1];[3:a]adelay=5400|5400[a2];\
     [4:a]adelay=10100|10100[a3];[5:a]adelay=15000|15000[a4];\
-    [a1][a2][a3][a4]amix=inputs=4:normalize=0[vo];\
-    [1:a]volume=0.5[mus];\
-    [mus][vo]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[musd];\
-    [0:a]volume=0.22[foley];\
-    [foley][musd][vo]amix=inputs=3:duration=first:normalize=0[out]" \
-  -map 0:v -map "[out]" -c:v copy -c:a aac -b:a 192k -shortest final.mp4
+    [a1][a2][a3][a4]amix=inputs=4:normalize=0,apad,atrim=duration=20,asplit=2[vo_key][vo_mix];\
+    [1:a]volume=0.5,atrim=duration=20[mus];\
+    [mus][vo_key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[musd];\
+    [0:a]volume=0.22,apad,atrim=duration=20[foley];\
+    [foley][musd][vo_mix]amix=inputs=3:duration=longest:normalize=0,atrim=duration=20[out]" \
+  -map 0:v -map "[out]" -c:v copy -c:a aac -b:a 192k -t 20 -movflags +faststart final.mp4
 ```
 
-`normalize=0` is not optional (without it `amix` divides by input count and drops
-6 dB). Tuning: raise `[1:a]volume` for a louder bed; lower `ratio`/`threshold` for
+`asplit` is required: the narration feeds two consumers, sidechain detection and audible output. Here `normalize=0` keeps deliberate input gains; the sum can clip, so measure the final mix and adjust gains/limiting before delivery. Normalized mixing is a valid alternative with a different gain plan. Tuning: raise `[1:a]volume` for a louder bed; lower `ratio`/`threshold` for
 gentler ducking; raise `[0:a]volume` if the paper foley should read more; keep VO
-at unity so it always sits on top. **No music bed** → drop the music input and the
-`[mus]/[musd]` lines, mix `[foley]` + `[vo]` only. **Silent film** → `cp cut.mp4
-final.mp4`.
+at unity so it always sits on top. **No music bed** → omit music and sidechain stages, omit the unnecessary `asplit`, and mix padded foley plus narration to the exact picture duration. **No foley stream** → supply `anullsrc=r=48000:cl=stereo` or omit foley and rebuild the graph; never reference a nonexistent `[0:a]`. **No narration** → omit narration and sidechain stages. **Fully silent film** → `ffmpeg -n -i cut.mp4 -map 0:v:0 -c:v copy -an final.mp4`. “No narration” can still include approved foley/music; do not confuse it with fully silent.
 
 ---
 
@@ -290,13 +281,14 @@ Never bake a brand into a Nano Banana prompt (it drifts/warps) — overlay it in
 post. Persistent corner bug (transparent `logo.png`):
 
 ```bash
-ffmpeg -y -i final.mp4 -i logo.png \
+ffmpeg -n -i final.mp4 -i logo.png \
   -filter_complex "[1:v]scale=iw*0.10:-1[lg];[0:v][lg]overlay=W-w-40:H-h-40:format=auto[v]" \
-  -map "[v]" -map 0:a -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a copy -movflags +faststart b.mp4 \
-  && mv b.mp4 final.mp4
+  -map "[v]" -map 0:a? -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a copy -movflags +faststart final-branded.mp4
 ```
 
 ---
+
+Keep `final.mp4` as the unbranded original. Verify `final-branded.mp4` before selecting it for delivery.
 
 ## 12. Verification
 
@@ -316,21 +308,20 @@ back the wrong length; check per-clip with `ffprobe`.
 
 ## 13. Resume after failure
 
-Read `shots.json`. Regenerate only shots whose `status` ≠ `done`.
-- `vo_done` → skip TTS, start at `create_image`.
-- `image_queued` with an id → `wait_for_image` again (job may be alive).
-- `image_done` → skip to `create_video`.
-- `failed` → read the error. A content rejection needs a prompt edit, not a retry;
-  a timeout needs a retry.
+Read the last valid manifest and verify retained assets before any new calls.
+- `vo_done`: reuse audio; proceed to the image stage.
+- `image_queued` or `video_queued` with an ID: query/wait for that same ID. A timeout is unknown completion, not permission to submit a duplicate paid job.
+- `image_done`: reuse the image and proceed to the video stage.
+- `done` with a missing local file: recover/download the existing result by ID or URL first.
+- `failed`: inspect the provider's actual terminal error. Authentication or exhausted credits require resolution, and content rejection needs a prompt review. Bound retries within the user's approved spend.
 
-Never regenerate a `done` shot "for consistency" — each shot is independent and a
-re-roll comes back different. Re-verify total duration after any repair.
+Preserve successful stages and all original files. If status cannot be reconciled, explain the uncertainty before a chargeable resubmission. Recheck timeline and final duration after any repair.
 
 ---
 
 ## 14. Optional posting (Unsora)
 
-Publishing needs its own explicit yes, separate from the yes to generate.
+Publishing needs explicit authorization identifying the final media, caption, account and schedule. Prepare these before the final publishing action; generation approval alone does not authorize posting. Honor publication authority already given for those exact details.
 
 1. `Unsora AI:get_subscription` → confirm `isActive` (posting needs a paid plan).
 2. `Unsora AI:get_accounts` → list connected Instagram / TikTok accounts.
@@ -338,5 +329,4 @@ Publishing needs its own explicit yes, separate from the yes to generate.
    URL, say so and ask how they want to host it.
 4. `Unsora AI:create_post` with `accountIds`, `caption`, `mediaType: "video"`,
    `mediaUrl`, optional `scheduled_at` (ISO; omit to post now).
-5. Confirm with `Unsora AI:list_posts`. Draft the caption; let the user edit before
-   it goes out.
+5. Confirm with `Unsora AI:list_posts`; distinguish queued, scheduled, failed and published states. Do not treat a successful create request as proof that a post is live.

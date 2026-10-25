@@ -166,11 +166,9 @@ motion — cut-out photo elements and type snap and slide on a low frame rate
 (~8–12 fps feel), hard steps between poses, no smooth interpolation, no morphing,
 no tweening. In the grammar of a Vox editorial explainer / photomontage cutout.
 
-The start frame is the target composition — the shot resolves to exactly this
-frame: same layout, same card, same marks. Do not redescribe or re-light the
-elements; the image carries them.
+The supplied starting plate is the actual first frame. [Describe motion that can begin from this plate. If using an approved partial plate plus a supported end-frame constraint, describe the assembly into that final composition.] Do not re-light or redesign the supplied elements. A finished starting image cannot be made empty by calling it an end state.
 
-[If a sheet is bound: keep @Image1's design consistent through every pose.]
+[Bind each design sheet to its actual reference slot. In the example call with image occupying @Image1, the first additional reference is @Image2. Verify this against the live tool schema.]
 
 Rundown: [element A] slides in from [edge] → [element B] pops on over it →
 [the accent mark: e.g. the ACCENT redline draws across / the ACCENT circle snaps
@@ -256,9 +254,9 @@ a shot actually uses — a dangling reference invites drift.
 - If the shot uses a sheet: the sheet URL is in `referenceImages` of BOTH calls,
   bound by slot in both prompts, and the prompt describes only pose/arrangement.
 - Animation prompt names @Image1 / the start frame by role, redescribes nothing,
-  says **target composition**, uses only limited-frame verbs, states the cadence.
+  distinguishes the actual starting frame from the final arrangement, uses only limited-frame verbs, states the cadence.
 - Camera is locked-off or exactly one slow push / lateral slide.
 - Audio line is `No voice.` + paper foley + one material sound + `No music.`
 - `aspectRatio` identical in both prompts and both tool calls; duration identical
-  in the breakdown, the animation prompt, and the `duration` parameter — and it
-  matches the shot's VO-line length from Phase 4.
+  in the generation plan, animation prompt and requested `duration` parameter.
+  Keep the final edit window separate; it must fit measured narration plus lead and tail.
